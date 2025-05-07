@@ -616,6 +616,39 @@ checklist.
 
 # Troubleshooting
 
+## Permission denied / SELinux issues
+
+If you are using a system with SELinux enabled (e.g. Fedora) you may encounter
+permissions errors like the following when doing Guix builds:
+
+```
+guix gc: error: remounting /gnu/store writable: Permission denied
+```
+
+The SELinux policy Guix installs is not super well-tested and maintained, and
+may be missing some policy allowances that Guix needs in order to build, the
+easiest solution is to set `SELinux` to permissive for guix-daemon:
+
+```bash
+# as root
+semanage permissive -a guix_daemon.guix_daemon_t
+```
+
+But, if you prefer, you can use the `audit2allow` utility to turn SELinux
+violation logs into CIL policies that allow that behavior:
+
+```console
+$ sudo ausearch -c 'guix-daemon' --raw | audit2allow -C
+;============= guix_daemon.guix_daemon_t ==============
+(allow guix_daemon.guix_daemon_t fs_t (filesystem (remount)))
+```
+
+and add them to the Guix SELinux policy file. (Consider contributing them
+upstream).
+`/var/guix/profiles/per-user/root/current-guix/share/selinux/guix-daemon.cil`
+currently, but check the Guix docs for the up-to-date location:
+https://guix.gnu.org/manual/devel/en/guix.html#Installing-the-SELinux-policy
+
 ## Derivation failed to build
 
 When you see a build failure like below:
