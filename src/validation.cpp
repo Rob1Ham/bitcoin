@@ -1246,6 +1246,69 @@ bool MemPoolAccept::PackageMempoolChecks(const std::vector<CTransactionRef>& txn
     return true;
 }
 
+unsigned int PolicyScriptVerifyFlags(const ignore_rejects_type& ignore_rejects)
+{
+    if (ignore_rejects.empty()) {
+        return STANDARD_SCRIPT_VERIFY_FLAGS;
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag")) {
+        return MANDATORY_SCRIPT_VERIFY_FLAGS;
+    }
+
+    unsigned int flags = STANDARD_SCRIPT_VERIFY_FLAGS;
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-upgradable")) {
+        constexpr unsigned int upgradable_policy_flags =
+            SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS |
+            SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM |
+            SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION |
+            SCRIPT_VERIFY_DISCOURAGE_OP_SUCCESS |
+            SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE;
+        flags &= ~upgradable_policy_flags;
+    } else {
+        if (ignore_rejects.count("non-mandatory-script-verify-flag-upgradable-nops")) {
+            flags &= ~SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS;
+        }
+        if (ignore_rejects.count("non-mandatory-script-verify-flag-upgradable-pubkeytype")) {
+            flags &= ~SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE;
+        }
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-bip62")) {
+        constexpr unsigned int bip62_policy_flags =
+            SCRIPT_VERIFY_LOW_S |
+            SCRIPT_VERIFY_SIGPUSHONLY |  // NOTE: not actually set ever
+            SCRIPT_VERIFY_MINIMALDATA;
+        flags &= ~bip62_policy_flags;
+    } else {
+        if (ignore_rejects.count("non-mandatory-script-verify-flag-low_s")) {
+            flags &= ~SCRIPT_VERIFY_LOW_S;
+        }
+        if (ignore_rejects.count("non-mandatory-script-verify-flag-minimaldata")) {
+            flags &= ~SCRIPT_VERIFY_MINIMALDATA;
+        }
+        if (ignore_rejects.count("non-mandatory-script-verify-flag-cleanstack")) {
+            flags &= ~SCRIPT_VERIFY_CLEANSTACK;
+        }
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-strictenc")) {
+        flags &= ~SCRIPT_VERIFY_STRICTENC;
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-minimalif")) {
+        flags &= ~SCRIPT_VERIFY_MINIMALIF;
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-nullfail")) {
+        flags &= ~SCRIPT_VERIFY_NULLFAIL;
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-witness_pubkeytype")) {
+        flags &= ~SCRIPT_VERIFY_WITNESS_PUBKEYTYPE;
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-const_scriptcode")) {
+        flags &= ~SCRIPT_VERIFY_CONST_SCRIPTCODE;
+    }
+    flags |= MANDATORY_SCRIPT_VERIFY_FLAGS;  // for safety
+    return flags;
+}
+
+
 bool MemPoolAccept::PolicyScriptChecks(const ATMPArgs& args, Workspace& ws)
 {
     AssertLockHeld(cs_main);
