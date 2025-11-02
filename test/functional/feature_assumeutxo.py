@@ -21,6 +21,7 @@ from test_framework.compressor import (
     compress_amount,
 )
 from test_framework.messages import (
+    NODE_BIP148,
     CBlockHeader,
     from_hex,
     MAGIC_BYTES,
