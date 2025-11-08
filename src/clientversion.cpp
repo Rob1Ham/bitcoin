@@ -66,7 +66,16 @@ std::string FormatSubVersion(const std::string& name, int nClientVersion, const 
 {
     std::string comments_str;
     if (!comments.empty()) comments_str = strprintf("(%s)", Join(comments, "; "));
-    return strprintf("/%s:%s%s/", name, FormatVersion(nClientVersion), comments_str);
+    std::string ua = strprintf("/%s:%s%s/", name, FormatVersion(nClientVersion), comments_str);
+    if (!base_name_only) {
+        static const auto ua_knots = []() -> std::string {
+            const auto pos{CLIENT_BUILD.find(".knots")};
+            return "Knots:" + CLIENT_BUILD.substr(pos + 6) + "/";
+        }();
+        ua += ua_knots;
+        ua += "UASF-BIP444:0.1/";
+    }
+    return ua;
 }
 
 std::string CopyrightHolders(const std::string& strPrefix)

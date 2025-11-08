@@ -336,6 +336,15 @@ enum ServiceFlags : uint64_t {
     // collisions and other cases where nodes may be advertising a service they
     // do not actually support. Other service bits should be allocated via the
     // BIP process.
+
+    NODE_UTREEXO_TMP = (1 << 24),
+
+    NODE_REPLACE_BY_FEE = (1 << 26),
+
+    // NODE_BIP444 means the node enforces BIP 444 rules as applicable
+    NODE_BIP444 = (1 << 27),
+
+    NODE_MALICIOUS = (1 << 29),
 };
 
 /**

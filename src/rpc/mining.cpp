@@ -951,6 +951,9 @@ static RPCHelpMan getblocktemplate()
         // when attempting to mine with this template
         aRules.push_back("!signet");
     }
+    if (DeploymentActiveAfter(pindexPrev, consensusParams, Consensus::BuriedDeployment::DEPLOYMENT_REDUCED_DATA, chainman.m_versionbitscache)) {
+        aRules.push_back("reduced_data");
+    }
 
     UniValue vbavailable(UniValue::VOBJ);
     const auto gbtstatus = chainman.m_versionbitscache.GBTStatus(*pindexPrev, consensusParams);

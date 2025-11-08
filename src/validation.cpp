@@ -142,7 +142,8 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
                        const CCoinsViewCache& inputs, unsigned int flags, bool cacheSigStore,
                        bool cacheFullScriptStore, PrecomputedTransactionData& txdata,
                        ValidationCache& validation_cache,
-                       std::vector<CScriptCheck>* pvChecks = nullptr)
+                       std::vector<CScriptCheck>* pvChecks = nullptr,
+                       const std::vector<unsigned int>& flags_per_input = {})
                        EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 bool CheckFinalTxAtTip(const CBlockIndex& active_chain_tip, const CTransaction& tx)
@@ -893,7 +894,9 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     }
 
     // The mempool holds txs for the next block, so pass height+1 to CheckTxInputs
-    if (!Consensus::CheckTxInputs(tx, state, m_view, m_active_chainstate.m_chain.Height() + 1, ws.m_base_fees)) {
+    const auto block_height_current = m_active_chainstate.m_chain.Height();
+    const auto block_height_next = block_height_current + 1;
+    if (!Consensus::CheckTxInputs(tx, state, m_view, block_height_next, ws.m_base_fees, CheckTxInputsRules::OutputSizeLimit)) {
         return false; // state filled in by CheckTxInputs
     }
 
@@ -1243,6 +1246,69 @@ bool MemPoolAccept::PackageMempoolChecks(const std::vector<CTransactionRef>& txn
 
     return true;
 }
+
+unsigned int PolicyScriptVerifyFlags(const ignore_rejects_type& ignore_rejects)
+{
+    if (ignore_rejects.empty()) {
+        return STANDARD_SCRIPT_VERIFY_FLAGS;
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag")) {
+        return MANDATORY_SCRIPT_VERIFY_FLAGS;
+    }
+
+    unsigned int flags = STANDARD_SCRIPT_VERIFY_FLAGS;
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-upgradable")) {
+        constexpr unsigned int upgradable_policy_flags =
+            SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS |
+            SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM |
+            SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION |
+            SCRIPT_VERIFY_DISCOURAGE_OP_SUCCESS |
+            SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE;
+        flags &= ~upgradable_policy_flags;
+    } else {
+        if (ignore_rejects.count("non-mandatory-script-verify-flag-upgradable-nops")) {
+            flags &= ~SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS;
+        }
+        if (ignore_rejects.count("non-mandatory-script-verify-flag-upgradable-pubkeytype")) {
+            flags &= ~SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE;
+        }
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-bip62")) {
+        constexpr unsigned int bip62_policy_flags =
+            SCRIPT_VERIFY_LOW_S |
+            SCRIPT_VERIFY_SIGPUSHONLY |  // NOTE: not actually set ever
+            SCRIPT_VERIFY_MINIMALDATA;
+        flags &= ~bip62_policy_flags;
+    } else {
+        if (ignore_rejects.count("non-mandatory-script-verify-flag-low_s")) {
+            flags &= ~SCRIPT_VERIFY_LOW_S;
+        }
+        if (ignore_rejects.count("non-mandatory-script-verify-flag-minimaldata")) {
+            flags &= ~SCRIPT_VERIFY_MINIMALDATA;
+        }
+        if (ignore_rejects.count("non-mandatory-script-verify-flag-cleanstack")) {
+            flags &= ~SCRIPT_VERIFY_CLEANSTACK;
+        }
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-strictenc")) {
+        flags &= ~SCRIPT_VERIFY_STRICTENC;
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-minimalif")) {
+        flags &= ~SCRIPT_VERIFY_MINIMALIF;
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-nullfail")) {
+        flags &= ~SCRIPT_VERIFY_NULLFAIL;
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-witness_pubkeytype")) {
+        flags &= ~SCRIPT_VERIFY_WITNESS_PUBKEYTYPE;
+    }
+    if (ignore_rejects.count("non-mandatory-script-verify-flag-const_scriptcode")) {
+        flags &= ~SCRIPT_VERIFY_CONST_SCRIPTCODE;
+    }
+    flags |= MANDATORY_SCRIPT_VERIFY_FLAGS;  // for safety
+    return flags;
+}
+
 
 bool MemPoolAccept::PolicyScriptChecks(const ATMPArgs& args, Workspace& ws)
 {
@@ -2128,6 +2194,10 @@ ValidationCache::ValidationCache(const size_t script_execution_cache_bytes, cons
  * This involves ECDSA signature checks so can be computationally intensive. This function should
  * only be called after the cheap sanity checks in CheckTxInputs passed.
  *
+ * WARNING: flags_per_input deviations from flags must be handled with care. Under no
+ * circumstances should they allow a script to pass that might not pass with the same
+ * `flags` parameter (which is used for the cache).
+ *
  * If pvChecks is not nullptr, script checks are pushed onto it instead of being performed inline. Any
  * script checks which are not necessary (eg due to script execution cache hits) are, obviously,
  * not pushed onto pvChecks/run.
@@ -2145,7 +2215,8 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
                        const CCoinsViewCache& inputs, unsigned int flags, bool cacheSigStore,
                        bool cacheFullScriptStore, PrecomputedTransactionData& txdata,
                        ValidationCache& validation_cache,
-                       std::vector<CScriptCheck>* pvChecks)
+                       std::vector<CScriptCheck>* pvChecks,
+                       const std::vector<unsigned int>& flags_per_input)
 {
     if (tx.IsCoinBase()) return true;
 
@@ -2179,8 +2250,10 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
         txdata.Init(tx, std::move(spent_outputs));
     }
     assert(txdata.m_spent_outputs.size() == tx.vin.size());
+    assert(flags_per_input.empty() || flags_per_input.size() == tx.vin.size());
 
     for (unsigned int i = 0; i < tx.vin.size(); i++) {
+        if (!flags_per_input.empty()) flags = flags_per_input[i];
 
         // We very carefully only pass in things to CScriptCheck which
         // are clearly committed to by tx' witness hash. This provides
@@ -2366,6 +2439,10 @@ static unsigned int GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
     // Enforce BIP147 NULLDUMMY (activated simultaneously with segwit)
     if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_SEGWIT)) {
         flags |= SCRIPT_VERIFY_NULLDUMMY;
+    }
+
+    if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_REDUCED_DATA)) {
+        flags |= REDUCED_DATA_MANDATORY_VERIFY_FLAGS;
     }
 
     return flags;
@@ -2582,11 +2659,16 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
 
     std::vector<PrecomputedTransactionData> txsdata(block.vtx.size());
 
+    const auto reduced_data_start_height{params.GetConsensus().ReducedDataHeightBegin};
+
+    const auto chk_input_rules{DeploymentActiveAt(*pindex, m_chainman, Consensus::DEPLOYMENT_REDUCED_DATA) ? CheckTxInputsRules::OutputSizeLimit : CheckTxInputsRules::None};
+
     std::vector<int> prevheights;
     CAmount nFees = 0;
     int nInputs = 0;
     int64_t nSigOpsCost = 0;
     blockundo.vtxundo.reserve(block.vtx.size() - 1);
+    std::vector<unsigned int> flags_per_input;
     for (unsigned int i = 0; i < block.vtx.size(); i++)
     {
         if (!state.IsValid()) break;
@@ -2598,7 +2680,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
         {
             CAmount txfee = 0;
             TxValidationState tx_state;
-            if (!Consensus::CheckTxInputs(tx, tx_state, view, pindex->nHeight, txfee)) {
+            if (!Consensus::CheckTxInputs(tx, tx_state, view, pindex->nHeight, txfee, chk_input_rules)) {
                 // Any transaction validation failure in ConnectBlock is a block consensus failure
                 state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                               tx_state.GetRejectReason(),
@@ -2616,8 +2698,10 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
             // BIP68 lock checks (as opposed to nLockTime checks) must
             // be in ConnectBlock because they require the UTXO set
             prevheights.resize(tx.vin.size());
+            flags_per_input.resize(tx.vin.size());
             for (size_t j = 0; j < tx.vin.size(); j++) {
                 prevheights[j] = view.AccessCoin(tx.vin[j].prevout).nHeight;
+                flags_per_input[j] = (prevheights[j] < reduced_data_start_height) ? (flags & ~REDUCED_DATA_MANDATORY_VERIFY_FLAGS) : flags;
             }
 
             if (!SequenceLocks(tx, nLockTimeFlags, prevheights, *pindex)) {
@@ -2642,16 +2726,8 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
             bool fCacheResults = fJustCheck; /* Don't cache results if we're actually connecting blocks (still consult the cache, though) */
             bool tx_ok;
             TxValidationState tx_state;
-            // If CheckInputScripts is called with a pointer to a checks vector, the resulting checks are appended to it. In that case
-            // they need to be added to control which runs them asynchronously. Otherwise, CheckInputScripts runs the checks before returning.
-            if (control) {
-                std::vector<CScriptCheck> vChecks;
-                tx_ok = CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache, &vChecks);
-                if (tx_ok) control->Add(std::move(vChecks));
-            } else {
-                tx_ok = CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache);
-            }
-            if (!tx_ok) {
+            if (fScriptChecks && !CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache, parallel_script_checks ? &vChecks : nullptr, flags_per_input)) {
+
                 // Any transaction validation failure in ConnectBlock is a block consensus failure
                 state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                               tx_state.GetRejectReason(), tx_state.GetDebugMessage());

@@ -660,8 +660,8 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-bytespersigop", strprintf("Equivalent bytes per sigop in transactions for relay and mining (default: %u)", DEFAULT_BYTES_PER_SIGOP), ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
     argsman.AddArg("-datacarrier", strprintf("Relay and mine data carrier transactions (default: %u)", DEFAULT_ACCEPT_DATACARRIER), ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
     argsman.AddArg("-datacarriersize",
-                   strprintf("Relay and mine transactions whose data-carrying raw scriptPubKeys in aggregate "
-                             "are of this size or less, allowing multiple outputs (default: %u)",
+                   strprintf("Maximum size of data in data carrier transactions we relay and mine, in bytes (maximum %s, default: %u)",
+                             MAX_OUTPUT_DATA_SIZE,
                              MAX_OP_RETURN_RELAY),
                    ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
     argsman.AddArg("-permitbaremultisig", strprintf("Relay transactions creating non-P2SH multisig outputs (default: %u)", DEFAULT_PERMIT_BAREMULTISIG), ArgsManager::ALLOW_ANY,
@@ -835,7 +835,7 @@ namespace { // Variables internal to initialization process only
 
 int nMaxConnections;
 int available_fds;
-ServiceFlags g_local_services = ServiceFlags(NODE_NETWORK_LIMITED | NODE_WITNESS);
+ServiceFlags g_local_services = ServiceFlags(NODE_NETWORK_LIMITED | NODE_WITNESS | NODE_BIP444);
 int64_t peer_connect_timeout;
 std::set<BlockFilterType> g_enabled_filter_types;
 
@@ -1927,6 +1927,27 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
                 LogError("Failed to send shutdown signal after finishing block import\n");
             }
             return;
+        }
+
+        constexpr uint256 bad_block_hash{"0000000000000000000000000000000000000000000000000000000000000000"};
+        BlockValidationState state;
+        CBlockIndex* pblockindex;
+        {
+            LOCK(chainman.GetMutex());
+            pblockindex = chainman.m_blockman.LookupBlockIndex(bad_block_hash);
+            if (pblockindex && !pblockindex->IsValid(BLOCK_VALID_UNKNOWN)) {
+                // Already marked invalid
+                pblockindex = nullptr;
+            }
+        }
+        if (pblockindex) {
+            if (!chainman.ActiveChainstate().InvalidateBlock(state, pblockindex)) {
+                state.Error("InvalidateBlock failed (is your node too pruned?)");
+            }
+            if (state.IsValid()) {
+                chainman.ActiveChainstate().ActivateBestChain(state);
+            }
+            Assert(state.IsValid());
         }
 
         // Start indexes initial sync

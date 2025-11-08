@@ -27,8 +27,9 @@ enum BuriedDeployment : int16_t {
     DEPLOYMENT_DERSIG,
     DEPLOYMENT_CSV,
     DEPLOYMENT_SEGWIT,
+    DEPLOYMENT_REDUCED_DATA,
 };
-constexpr bool ValidDeployment(BuriedDeployment dep) { return dep <= DEPLOYMENT_SEGWIT; }
+constexpr bool ValidDeployment(BuriedDeployment dep) { return dep <= DEPLOYMENT_REDUCED_DATA; }
 
 enum DeploymentPos : uint16_t {
     DEPLOYMENT_TESTDUMMY,
@@ -103,6 +104,9 @@ struct Params {
      * Note that segwit v0 script rules are enforced on all blocks except the
      * BIP 16 exception blocks. */
     int SegwitHeight;
+    /** Block heights during which Reduced Data is active */
+    int ReducedDataHeightBegin{std::numeric_limits<int>::max()};
+    int ReducedDataHeightEnd{std::numeric_limits<int>::max()};
     /** Don't warn about unknown BIP 9 activations below this height.
      * This prevents us from warning about the CSV and segwit activations. */
     int MinBIP9WarningHeight;
@@ -148,6 +152,24 @@ struct Params {
             return CSVHeight;
         case DEPLOYMENT_SEGWIT:
             return SegwitHeight;
+        case DEPLOYMENT_REDUCED_DATA:
+            return ReducedDataHeightBegin;
+        } // no default case, so the compiler can warn about missing cases
+        return std::numeric_limits<int>::max();
+    }
+
+    int DeploymentHeightEnd(BuriedDeployment dep) const
+    {
+        switch (dep) {
+        case DEPLOYMENT_HEIGHTINCB:
+        case DEPLOYMENT_CLTV:
+        case DEPLOYMENT_DERSIG:
+        case DEPLOYMENT_CSV:
+        case DEPLOYMENT_SEGWIT:
+            // These are forever
+            break;
+        case DEPLOYMENT_REDUCED_DATA:
+            return ReducedDataHeightEnd;
         } // no default case, so the compiler can warn about missing cases
         return std::numeric_limits<int>::max();
     }
