@@ -20,7 +20,15 @@ inline bool DeploymentActiveAfter(const CBlockIndex* pindexPrev, const Consensus
 inline bool DeploymentActiveAfter(const CBlockIndex* pindexPrev, const Consensus::Params& params, Consensus::DeploymentPos dep, VersionBitsCache& versionbitscache)
 {
     assert(Consensus::ValidDeployment(dep));
-    return ThresholdState::ACTIVE == versionbitscache.State(pindexPrev, params, dep);
+    if (ThresholdState::ACTIVE != versionbitscache.State(pindexPrev, params, dep)) return false;
+
+    const auto& deployment = params.vDeployments[dep];
+    // Permanent deployment (never expires)
+    if (deployment.active_duration == std::numeric_limits<int>::max()) return true;
+
+    const int activation_height = versionbitscache.StateSinceHeight(pindexPrev, params, dep);
+    const int height = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
+    return height < activation_height + deployment.active_duration;
 }
 
 /** Determine if a deployment is active for this block */
@@ -33,7 +41,14 @@ inline bool DeploymentActiveAt(const CBlockIndex& index, const Consensus::Params
 inline bool DeploymentActiveAt(const CBlockIndex& index, const Consensus::Params& params, Consensus::DeploymentPos dep, VersionBitsCache& versionbitscache)
 {
     assert(Consensus::ValidDeployment(dep));
-    return DeploymentActiveAfter(index.pprev, params, dep, versionbitscache);
+    if (ThresholdState::ACTIVE != versionbitscache.State(index.pprev, params, dep)) return false;
+
+    const auto& deployment = params.vDeployments[dep];
+    // Permanent deployment (never expires)
+    if (deployment.active_duration == std::numeric_limits<int>::max()) return true;
+
+    const int activation_height = versionbitscache.StateSinceHeight(index.pprev, params, dep);
+    return index.nHeight < activation_height + deployment.active_duration;
 }
 
 /** Determine if a deployment is enabled (can ever be active) */
