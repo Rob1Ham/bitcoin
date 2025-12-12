@@ -216,10 +216,80 @@ class BytesPerSigOpTest(BitcoinTestFramework):
         assert_equal(entry_parent['descendantsize'], parent_tx.get_vsize() + sigop_equivalent_vsize)
 
     def test_sigops_package(self):
-        # SKIP: This test uses bare multisig (37 bytes) which exceeds MAX_OUTPUT_SCRIPT_SIZE=34
-        # Bare multisig is now rejected when DEPLOYMENT_REDUCED_DATA output size limits are active
-        self.log.info("Skipping sigops package test - bare multisig exceeds MAX_OUTPUT_SCRIPT_SIZE=34")
-        # Test disabled - code removed to avoid dead code lint warnings
+        """Test sigops package limits using P2WSH spending.
+
+        Note: The original upstream test used bare multisig outputs (37 bytes) which
+        exceed MAX_OUTPUT_SCRIPT_SIZE=34. With REDUCED_DATA, the output size limit is
+        enforced unconditionally in mempool acceptance (validation.cpp:990), so bare
+        multisig cannot be tested in the mempool. This test uses P2WSH spending instead,
+        which properly counts sigops in the witness script while staying within the
+        34-byte output size limit.
+        """
+        self.log.info("Test sigops package limits using P2WSH spending")
+        # P2WSH outputs are 34 bytes (compliant with MAX_OUTPUT_SCRIPT_SIZE=34)
+        self.restart_node(0, extra_args=["-bytespersigop=5000"] + self.extra_args[0])
+
+        # Create P2WSH outputs with high-sigop witness scripts that will be spent
+        # Using witness script with OP_CHECKMULTISIG = 20 sigops
+        # 20 sigops * 5000 bytes/sigop / 4 (witness scale) = 25000 vbytes
+        num_sigops = MAX_PUBKEYS_PER_MULTISIG  # 20 sigops
+        max_sigops_vsize = num_sigops * 5000 // WITNESS_SCALE_FACTOR  # 25000 vbytes
+
+        # Create a witness script with 20 sigops (OP_CHECKMULTISIG counts as 20)
+        witness_script = CScript([OP_FALSE, OP_IF, OP_CHECKMULTISIG, OP_ENDIF, OP_TRUE])
+
+        # Fund P2WSH outputs that we'll spend
+        p2wsh_script = script_to_p2wsh_script(witness_script)
+
+        fund_parent = self.wallet.send_to(
+            from_node=self.nodes[0],
+            scriptPubKey=p2wsh_script,
+            amount=2000000,  # 0.02 BTC
+        )
+
+        # Mine the funding transaction
+        self.generate(self.nodes[0], 1)
+
+        # Create parent tx spending the P2WSH output, creating another P2WSH output for child
+        tx_parent = CTransaction()
+        tx_parent.vin = [CTxIn(COutPoint(int(fund_parent["txid"], 16), fund_parent["sent_vout"]))]
+        tx_parent.wit.vtxinwit = [CTxInWitness()]
+        tx_parent.wit.vtxinwit[0].scriptWitness.stack = [bytes(witness_script)]
+        tx_parent.vout = [CTxOut(1900000, p2wsh_script)]  # Output P2WSH for child to spend
+
+        # Create child tx spending from parent's P2WSH output with high sigops witness
+        tx_child = CTransaction()
+        tx_child.vin = [CTxIn(COutPoint(int(tx_parent.rehash(), 16), 0))]
+        tx_child.wit.vtxinwit = [CTxInWitness()]
+        tx_child.wit.vtxinwit[0].scriptWitness.stack = [bytes(witness_script)]
+        tx_child.vout = [CTxOut(1800000, p2wsh_script)]  # Output to P2WSH (not OP_RETURN to avoid maxburnamount)
+
+        # Separately, the parent tx is ok
+        parent_individual_testres = self.nodes[0].testmempoolaccept([tx_parent.serialize().hex()])[0]
+        assert parent_individual_testres["allowed"], f"Parent tx rejected: {parent_individual_testres}"
+        assert_equal(parent_individual_testres["vsize"], max_sigops_vsize)
+
+        # Together as a package, verify sigops-adjusted vsize is used
+        packet_test = self.nodes[0].testmempoolaccept([tx_parent.serialize().hex(), tx_child.serialize().hex()])
+
+        # Both should be allowed (2 * 25000 = 50000 < 101000 ancestor limit)
+        assert packet_test[0]["allowed"], f"Parent tx in package rejected: {packet_test[0]}"
+        assert packet_test[1]["allowed"], f"Child tx in package rejected: {packet_test[1]}"
+
+        # Submit the package and verify mempool entries have correct sigops-adjusted vsize
+        self.nodes[0].submitpackage([tx_parent.serialize().hex(), tx_child.serialize().hex()])
+
+        parent_entry = self.nodes[0].getmempoolentry(tx_parent.rehash())
+        child_entry = self.nodes[0].getmempoolentry(tx_child.rehash())
+
+        # Verify sigops-adjusted vsize is used in mempool accounting
+        assert_equal(parent_entry["vsize"], max_sigops_vsize)
+        assert_equal(child_entry["vsize"], max_sigops_vsize)
+        assert_equal(child_entry["ancestorsize"], 2 * max_sigops_vsize)
+
+        # Transactions are tiny in actual weight (the sigops inflation is for mempool accounting)
+        assert_greater_than(2000, tx_parent.get_weight())
+        assert_greater_than(2000, tx_child.get_weight())
 
     def test_legacy_sigops_stdness(self):
         self.log.info("Test a transaction with too many legacy sigops in its inputs is non-standard.")
