@@ -88,7 +88,6 @@ class MaxActivationHeightTest(BitcoinTestFramework):
 
         # Run bitcoind directly with invalid config to test validation
         import subprocess
-        import os
 
         # Get the bitcoind binary path from the test framework
         bitcoind_path = self.options.bitcoind

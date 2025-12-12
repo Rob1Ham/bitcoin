@@ -316,6 +316,38 @@ template<typename... Args> NodeRef MakeNodeRef(Args&&... args) {
     return miniscript::MakeNodeRef<CPubKey>(miniscript::internal::NoDupCheck{}, std::forward<Args>(args)...);
 }
 
+/** Check if a miniscript node or any of its children uses OP_IF/OP_NOTIF fragments.
+ *  These fragments are forbidden in tapscript under REDUCED_DATA rules:
+ *  - WRAP_D: OP_DUP OP_IF [X] OP_ENDIF
+ *  - WRAP_J: OP_SIZE OP_0NOTEQUAL OP_IF [X] OP_ENDIF
+ *  - OR_C:   [X] OP_NOTIF [Y] OP_ENDIF
+ *  - OR_D:   [X] OP_IFDUP OP_NOTIF [Y] OP_ENDIF
+ *  - OR_I:   OP_IF [X] OP_ELSE [Y] OP_ENDIF
+ *  - ANDOR:  [X] OP_NOTIF [Z] OP_ELSE [Y] OP_ENDIF
+ */
+bool UsesOpIf(const NodeRef& root) {
+    for (std::vector stack{root.get()}; !stack.empty();) {
+        const Node* ref{stack.back()};
+        stack.pop_back();
+
+        switch (ref->fragment) {
+            case Fragment::WRAP_D:
+            case Fragment::WRAP_J:
+            case Fragment::OR_C:
+            case Fragment::OR_D:
+            case Fragment::OR_I:
+            case Fragment::ANDOR:
+                return true;
+            default:
+                break;
+        }
+        for (const auto& sub : ref->subs) {
+            stack.push_back(sub.get());
+        }
+    }
+    return false;
+}
+
 /** Information about a yet to be constructed Miniscript node. */
 struct NodeInfo {
     //! The type of this node
