@@ -214,6 +214,17 @@ class SendallTest(BitcoinTestFramework):
         self.generate(self.nodes[0], 1)
         assert_greater_than(self.wallet.getbalances()["mine"]["trusted"], 0)
 
+        # Duplicate inputs are rejected before constructing or committing a transaction.
+        utxo = self.wallet.listunspent()[0]
+        assert_raises_rpc_error(
+            -8,
+            f"Input {utxo['txid']}:{utxo['vout']} is duplicated.",
+            self.wallet.sendall,
+            recipients=[self.remainder_target],
+            inputs=[utxo, utxo],
+        )
+        assert utxo in self.wallet.listunspent()
+
     @cleanup
     def sendall_fails_on_missing_input(self):
         # fails because UTXO was previously spent, and wallet is empty
